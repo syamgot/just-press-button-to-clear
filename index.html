@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Absolutely Unbeatable Game</title>
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            touch-action: none;
+            font-family: 'Courier New', Courier, monospace;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d', { alpha: false });
+
+        let width, height;
+        let scale = 1;
+
+        function resize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+
+            // Base logical resolution for consistent speeds across devices. 
+            // e.g., 600 height is the base.
+            scale = height / 600;
+        }
+
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Game States
+        const STATE_START = 0;
+        const STATE_PLAYING = 1;
+        const STATE_CLEAR = 2;
+
+        let gameState = STATE_START;
+        let score = 0;
+        let frames = 0;
+        let clearTimer = 0;
+        let isPressing = false;
+        let bossActive = false;
+        let bossDefeated = false;
+
+        // Input Handling
+        function setPressing(val) {
+            isPressing = val;
+            if (val && gameState === STATE_START) {
+                startGame();
+            }
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                setPressing(true);
+            }
+        });
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                setPressing(false);
+            }
+        });
+        window.addEventListener('mousedown', (e) => setPressing(true));
+        window.addEventListener('mouseup', (e) => setPressing(false));
+        window.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            setPressing(true);
+        }, { passive: false });
+        window.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            setPressing(false);
+        }, { passive: false });
+
+        function startGame() {
+            gameState = STATE_PLAYING;
+            score = 0;
+            frames = 0;
+            bossActive = false;
+            bossDefeated = false;
+            enemies = [];
+            playerBullets = [];
+            enemyBullets = [];
+            particles = [];
+            player.x = width / 2;
+        }
+
+        function triggerClear() {
+            gameState = STATE_CLEAR;
+            clearTimer = performance.now();
+        }
+
+        // Entities
+        const stars = [];
+        for (let i = 0; i < 150; i++) {
+            stars.push({
+                x: Math.random(),
+                y: Math.random(),
+                speed: (Math.random() * 0.5 + 0.1) // Base speed, scaled later
+            });
+        }
+
+        const player = {
+            x: width / 2,
+            get y() { return height - 80 * scale; },
+            size: 40,
+            lastShotTime: 0,
+            shotInterval: 1000 / 10 // 10 shots per second (100ms)
+        };
+
+        let playerBullets = [];
+        let enemies = [];
+        let enemyBullets = [];
+        let particles = [];
+
+        // Common draw helper for emojis
+        function drawEmoji(emoji, x, y, size) {
+            ctx.font = `${size}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(emoji, x, y);
+        }
+
+        // Enemy Types
+        class Zako {
+            constructor() {
+                this.x = Math.random() * (width - 80) + 40;
+                this.y = -50;
+                this.size = 40 * scale;
+                this.speed = (Math.random() * 2 + 1) * scale;
+                this.hp = 1;
+                this.score = 100;
+                // this.emoji = '👽';
+                this.emoji = Math.random() < 0.5 ? '👽' : '👾';
+                this.shootTimer = Math.random() * 120 + 60;
+            }
+            update() {
+                this.y += this.speed;
+                // Steer towards player's x when approaching player vertically
+                if (this.y > player.y - 100 * scale && Math.abs(this.x - player.x) > 5 * scale) {
+                    this.x += (player.x - this.x) * 0.1; // smooth adjustment
+                }
+                this.shootTimer--;
+                if (this.shootTimer <= 0) {
+                    // Prevent shooting when near bottom ( > 4/5 height )
+                    if (this.y <= height * 0.8) {
+                        this.shoot();
+                    }
+                    this.shootTimer = Math.random() * 120 + 60;
+                }
+                return this.y > height + 50;
+            }
+            shoot() {
+                // Shoot but intentionally miss player
+                const dx = player.x - this.x;
+                const dy = player.y - this.y;
+                let angle = Math.atan2(dy, dx);
+                // Offset angle so it misses
+                const offset = (Math.random() < 0.5 ? 1 : -1) * (0.3 + Math.random() * 0.2);
+                angle += offset;
+
+                enemyBullets.push({
+                    x: this.x,
+                    y: this.y,
+                    vx: Math.cos(angle) * 4 * scale,
+                    vy: Math.sin(angle) * 4 * scale,
+                    emoji: '🔴',
+                    size: 15 * scale
+                });
+            }
+            draw() { drawEmoji(this.emoji, this.x, this.y, this.size); }
+        }
+
+        class Charger {
+            constructor() {
+                this.x = Math.random() * width;
+                this.y = -50;
+                this.size = 40 * scale;
+                this.speed = 4 * scale;
+                this.hp = 1;
+                this.score = 200;
+                this.emoji = '🛸';
+                this.state = 'charge';
+                // Target slightly offset from player to make swerve look natural
+                this.targetX = player.x + (Math.random() < 0.5 ? -20 : 20);
+                this.vx = 0;
+                this.vy = this.speed;
+                const angle = Math.atan2(player.y - this.y, this.targetX - this.x);
+                this.vx = Math.cos(angle) * this.speed;
+                this.vy = Math.sin(angle) * this.speed;
+            }
+            update() {
+                // Swerve before hitting player
+                if (this.state === 'charge' && this.y > player.y - 150 * scale) {
+                    this.state = 'swerve';
+                    // Accel away horizontally
+                    this.ax = this.x > player.x ? 0.3 * scale : -0.3 * scale;
+                }
+                if (this.state === 'swerve') {
+                    this.vx += this.ax;
+                }
+
+                this.x += this.vx;
+                this.y += this.vy;
+                return this.y > height + 50 || this.x < -50 || this.x > width + 50;
+            }
+            draw() { drawEmoji(this.emoji, this.x, this.y, this.size); }
+        }
+
+        class SCurve {
+            constructor() {
+                this.x = Math.random() * (width - 100) + 50;
+                this.baseX = this.x;
+                this.y = -50;
+                this.size = 40 * scale;
+                this.speedY = 2 * scale;
+                this.hp = 1;
+                this.score = 300;
+                this.emoji = '🪐';
+                this.t = 0;
+            }
+            update() {
+                this.t += 0.05;
+                this.y += this.speedY;
+
+                // Accelerate X when passing player Y to ensure dodge
+                let dodgeMultiplier = 1;
+                if (Math.abs(this.y - player.y) < 100 * scale) {
+                    dodgeMultiplier = 2;
+                }
+
+                this.x = this.baseX + Math.sin(this.t) * 100 * scale * dodgeMultiplier;
+
+                // Keep strictly away from player X if too close on Y
+                if (Math.abs(this.y - player.y) < 60 * scale && Math.abs(this.x - player.x) < 40 * scale) {
+                    this.x = player.x + (this.x > player.x ? 40 * scale : -40 * scale);
+                }
+
+                return this.y > height + 50;
+            }
+            draw() { drawEmoji(this.emoji, this.x, this.y, this.size); }
+        }
+
+        // New Formation Enemy: 5 units moving together in a U-shape
+        class FormationEnemy {
+            constructor() {
+                this.baseX = player.x; // start centered on player
+                this.y = -50;
+                this.speedY = 2 * scale;
+                this.direction = 1; // 1 = down, -1 = up
+                this.t = 0; // for sinusoidal x motion
+                this.unitCount = 5;
+                this.unitSpacing = 40 * scale; // horizontal spacing between units
+                this.score = 500; // total for formation (5 * 100)
+                this.emoji = '👾';
+            }
+            update() {
+                // Move vertically down then up to form a U shape
+                this.y += this.speedY * this.direction;
+                if (this.y > height * 0.6) this.direction = -1; // start moving up after reaching 60% height
+                if (this.y < -50) return true; // off screen, remove
+                this.t += 0.05;
+                // Sinusoidal horizontal offset for the whole formation
+                const offsetX = Math.sin(this.t) * 80 * scale;
+                this.baseX = player.x + offsetX;
+                return false;
+            }
+            draw() {
+                for (let i = 0; i < this.unitCount; i++) {
+                    const x = this.baseX + (i - (this.unitCount - 1) / 2) * this.unitSpacing;
+                    drawEmoji(this.emoji, x, this.y, 30 * scale);
+                }
+            }
+        }
+
+        class Turret {
+            constructor() {
+                this.side = Math.random() < 0.5 ? 'left' : 'right';
+                this.y = Math.random() * (height / 2) + 50; // top half
+                this.x = this.side === 'left' ? -30 : width + 30;
+                this.targetX = this.side === 'left' ? 30 : width - 30;
+                this.size = 40 * scale;
+                this.hp = 2; // slightly tougher
+                this.score = 400;
+                this.emoji = '🗼';
+                this.state = 'enter';
+                this.shootTimer = 60;
+            }
+            update() {
+                if (this.state === 'enter') {
+                    if (this.side === 'left') {
+                        this.x += 2 * scale;
+                        if (this.x >= this.targetX) this.state = 'idle';
+                    } else {
+                        this.x -= 2 * scale;
+                        if (this.x <= this.targetX) this.state = 'idle';
+                    }
+                } else {
+                    this.shootTimer--;
+                    if (this.shootTimer <= 0) {
+                        this.shoot();
+                        this.shootTimer = 100;
+                    }
+                }
+                return false; // Turrets don't die by going off screen right away. Keep them until dead. 
+                // Alternatively, could leave after some time. Let's keep it simple.
+            }
+            shoot() {
+                // Shoot a vertical line somewhat near player but offset
+                const offset = this.side === 'left' ? -60 * scale : 60 * scale;
+                enemyBullets.push({
+                    x: this.x,
+                    y: this.y,
+                    vx: ((player.x + offset) - this.x) * 0.02, // Aim at offset
+                    vy: (player.y - this.y) * 0.02,
+                    emoji: '💧',
+                    size: 15 * scale
+                });
+            }
+            draw() { drawEmoji(this.emoji, this.x, this.y, this.size); }
+        }
+
+        class Boss {
+            constructor() {
+                this.x = width / 2;
+                this.y = -100;
+                this.targetY = 150 * scale;
+                this.size = 120 * scale;
+                this.hp = 100;
+                this.score = 5000;
+                this.emoji = '👹';
+                this.state = 'enter';
+                this.t = 0;
+                this.shootTimer = 0;
+            }
+            update() {
+                if (this.state === 'enter') {
+                    this.y += 2 * scale;
+                    if (this.y >= this.targetY) {
+                        this.state = 'fight';
+                    }
+                } else if (this.state === 'fight') {
+                    this.t += 0.02;
+                    this.x = (width / 2) + Math.sin(this.t) * (width * 0.2); // Hover left and right
+
+                    this.shootTimer--;
+                    if (this.shootTimer <= 0) {
+                        this.shoot();
+                        this.shootTimer = 20; // Fast shooting parallel lines
+                    }
+                }
+                return false;
+            }
+            shoot() {
+                // 4 parallel columns that perfectly gap the player's x position
+                // Player size is ~40. Gap should be wide enough.
+                // Bullets at x offsets: -80, -40, 40, 80 relative to player X.
+                // Actually, to look cool, boss shoots straight down from its own position,
+                // but we align the bullet streams so they form "safe lanes" matching player.x.
+
+                // So Boss shoots a wide spread of parallel lasers straight down.
+                // We just need to make sure none of them align with player.x.
+
+                // Let's create a wave of bullets horizontally.
+                const numLanes = Math.floor(width / (40 * scale));
+                const laneWidth = width / numLanes;
+
+                // Find lane closest to player
+                let minDist = Infinity;
+                let closestLanes = [];
+                for (let i = 0; i <= numLanes; i++) {
+                    let bx = i * laneWidth;
+                    if (Math.abs(bx - player.x) < 30 * scale) {
+                        // This lane hits player, don't shoot here
+                        continue;
+                    }
+                    // Prevent boss shooting when near bottom of screen
+                    if (this.y > height * 0.8) {
+                        continue;
+                    }
+                    if (Math.abs(bx - this.x) < 200 * scale) { // Only shoot roughly below boss
+                        enemyBullets.push({
+                            x: bx,
+                            y: this.y + 50 * scale,
+                            vx: 0,
+                            vy: 6 * scale,
+                            emoji: '⚡',
+                            size: 20 * scale
+                        });
+                    }
+                }
+            }
+            draw() { drawEmoji(this.emoji, this.x, this.y, this.size); }
+        }
+
+
+        function spawnEnemy() {
+            if (gameState !== STATE_PLAYING) return;
+            if (bossActive) return;
+
+            //if (score >= 5000 && !bossDefeated) {/
+            if (score >= 3000 && !bossDefeated) {/
+                enemies.push(new Boss());
+                bossActive = true;
+                return;
+            }
+
+            const rand = Math.random();
+            // Enforce max 20 enemies on screen
+            if (enemies.length >= 20) return;
+            if (rand < 0.5) enemies.push(new Zako());
+            else if (rand < 0.75) enemies.push(new Charger());
+            else if (rand < 0.9) enemies.push(new SCurve());
+            // else if (rand < 0.95) enemies.push(new FormationEnemy()); // New formation enemy (5-unit)
+            // else Turret removed
+        }
+
+        function spawnExplosion(x, y, size) {
+            particles.push({
+                x, y, size, life: 20, maxLife: 20, emoji: '💥'
+            });
+        }
+
+        function update() {
+            frames++;
+
+            // Update Starfield
+            stars.forEach(s => {
+                s.y += s.speed * scale;
+                if (s.y > 1) {
+                    s.y = 0;
+                    s.x = Math.random();
+                }
+            });
+
+            if (gameState === STATE_PLAYING) {
+                // Auto shooting
+                if (isPressing) {
+                    const now = performance.now();
+                    if (now - player.lastShotTime > player.shotInterval) {
+                        playerBullets.push({
+                            x: player.x,
+                            y: player.y - 30 * scale,
+                            speed: 15 * scale,
+                            size: 20 * scale
+                        });
+                        player.lastShotTime = now;
+                    }
+                }
+
+                // Enemy Spawn
+                if (frames % 60 === 0 && !bossActive) {
+                    spawnEnemy();
+                }
+
+                // Update Player Bullets (Move up)
+                for (let i = playerBullets.length - 1; i >= 0; i--) {
+                    let b = playerBullets[i];
+                    b.y -= b.speed;
+                    if (b.y < -50) playerBullets.splice(i, 1);
+                }
+
+                // Update Enemies
+                for (let i = enemies.length - 1; i >= 0; i--) {
+                    let e = enemies[i];
+                    if (e.update()) {
+                        enemies.splice(i, 1);
+                    }
+                }
+
+                // Update Enemy Bullets
+                for (let i = enemyBullets.length - 1; i >= 0; i--) {
+                    let b = enemyBullets[i];
+                    b.x += b.vx;
+                    b.y += b.vy;
+                    if (b.y > height + 50 || b.y < -50 || b.x < -50 || b.x > width + 50) {
+                        enemyBullets.splice(i, 1);
+                    }
+                }
+
+                // Collision: Player Bullets hitting Enemies
+                for (let i = playerBullets.length - 1; i >= 0; i--) {
+                    let pb = playerBullets[i];
+                    let hit = false;
+                    for (let j = enemies.length - 1; j >= 0; j--) {
+                        let e = enemies[j];
+                        // Distance check
+                        let dx = pb.x - e.x;
+                        let dy = pb.y - e.y;
+                        let dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < (pb.size + e.size) * 0.5) {
+                            e.hp--;
+                            hit = true;
+                            if (e.hp <= 0) {
+                                score += e.score;
+                                spawnExplosion(e.x, e.y, e.size);
+                                if (e instanceof Boss) {
+                                    bossActive = false;
+                                    bossDefeated = true;
+                                    // Clear existing bullets
+                                    enemyBullets = [];
+                                }
+                                enemies.splice(j, 1);
+                            } else {
+                                // Hit effect
+                                spawnExplosion(e.x, e.y, e.size * 0.5);
+                            }
+                            break; // Bullet absorbed
+                        }
+                    }
+                    if (hit) {
+                        playerBullets.splice(i, 1);
+                    }
+                }
+
+                // Enemy Bullets and Player collision? NEVER!
+                // Player is invincible. We don't even check collision.
+                // Bullets just pass through or around.
+
+                // Check Win Condition
+                if (score >= 10000 && gameState === STATE_PLAYING) {
+                    triggerClear();
+                }
+
+            } else if (gameState === STATE_CLEAR) {
+                // Optionally clear remaining enemies/bullets
+                if (frames % 10 === 0 && enemies.length > 0) {
+                    let e = enemies.pop();
+                    spawnExplosion(e.x, e.y, e.size);
+                }
+
+                // Return to title after 10 seconds
+                if (performance.now() - clearTimer > 10000) {
+                    gameState = STATE_START;
+                    score = 0;
+                }
+            }
+
+            // Update Particles
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.life--;
+                if (p.life <= 0) particles.splice(i, 1);
+            }
+        }
+
+        function draw() {
+            // Background
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, width, height);
+
+            // Stars
+            ctx.fillStyle = '#fff';
+            stars.forEach(s => {
+                ctx.beginPath();
+                ctx.arc(s.x * width, s.y * height, s.speed * 2, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Particles
+            particles.forEach(p => {
+                ctx.globalAlpha = p.life / p.maxLife;
+                drawEmoji(p.emoji, p.x, p.y, p.size * (1 + (p.maxLife - p.life) / (p.maxLife * 2)));
+            });
+            ctx.globalAlpha = 1;
+
+            if (gameState === STATE_PLAYING || gameState === STATE_CLEAR) {
+                // Enemies
+                enemies.forEach(e => e.draw());
+
+                // Enemy Bullets
+                enemyBullets.forEach(b => drawEmoji(b.emoji, b.x, b.y, b.size));
+
+                // Player Bullets
+                playerBullets.forEach(b => drawEmoji('🔥', b.x, b.y, b.size));
+
+                // Player
+                // Add a small thruster effect beneath player
+                ctx.fillStyle = isPressing ? '#f80' : '#444';
+                ctx.beginPath();
+                ctx.arc(player.x, player.y + 20 * scale, isPressing ? (Math.random() * 5 + 10) * scale : 5 * scale, 0, Math.PI * 2);
+                ctx.fill();
+                drawEmoji('🚀', player.x, player.y, player.size * scale);
+
+                // UI Top Area
+                ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                ctx.fillRect(0, 0, width, 50);
+
+                // Score
+                ctx.fillStyle = '#fff';
+                ctx.font = `bold ${24}px sans-serif`;
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(`SCORE: ${score.toLocaleString().padStart(5, '0')}`, 20, 25);
+
+                // Progress Bar
+                let progress = Math.min(score / 10000, 1);
+                ctx.fillStyle = '#333';
+                const barWidth = Math.min(width * 0.4, 300);
+                const barX = width - barWidth - 20;
+                ctx.fillRect(barX, 15, barWidth, 20);
+                ctx.fillStyle = progress === 1 ? '#0f0' : '#f0f';
+                ctx.fillRect(barX, 15, barWidth * progress, 20);
+                ctx.strokeStyle = '#fff';
+                ctx.strokeRect(barX, 15, barWidth, 20);
+
+            }
+
+            // Overlays
+            if (gameState === STATE_START) {
+                ctx.fillStyle = 'rgba(0,0,0,0.7)';
+                ctx.fillRect(0, 0, width, height);
+
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+
+                ctx.fillStyle = '#fff';
+                ctx.font = `bold ${48}px sans-serif`;
+                ctx.fillText('JUST PRESS BUTTON 2 CLEAR v.0.1', width / 2, height / 2 - 50);
+
+                // Blinking start text
+                if (Math.floor(performance.now() / 500) % 2 === 0) {
+                    ctx.fillStyle = '#ff0';
+                    ctx.font = `bold ${24}px sans-serif`;
+                    ctx.fillText('PRESS AND HOLD TO CLEAR', width / 2, height / 2 + 50);
+                }
+            } else if (gameState === STATE_CLEAR) {
+                ctx.fillStyle = 'rgba(0,0,0,0.7)';
+                ctx.fillRect(0, 0, width, height);
+
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+
+                // Rainbow text effect for clear
+                let hue = (performance.now() / 10) % 360;
+                ctx.fillStyle = `hsl(${hue}, 100%, 50%)`;
+                ctx.font = `bold ${64}px sans-serif`;
+                ctx.fillText('GAME CLEAR!', width / 2, height / 2);
+
+                let remaining = Math.ceil(10 - (performance.now() - clearTimer) / 1000);
+                ctx.fillStyle = '#fff';
+                ctx.font = `bold ${24}px sans-serif`;
+                ctx.fillText(`Returning to title in ${remaining}...`, width / 2, height / 2 + 80);
+            }
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Start loop
+        requestAnimationFrame(gameLoop);
+
+    </script>
+</body>
+
+</html>
